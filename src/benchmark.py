@@ -491,7 +491,7 @@ class Benchmark:
                         stats[name]['success_rate'] += 1 / total_runs
                         stats[name]['avg_length'] += result.path_length / total_runs
                         stats[name]['avg_time'] += result.computation_time / total_runs
-                        stats[name]['avg_nodes'] += result.nodes_expanded / total_runs
+                        stats[name]['avg_nodes'] += result.num_nodes_expanded / total_runs
                         stats[name]['avg_smoothness'] += result.path_smoothness / total_runs
 
         return stats

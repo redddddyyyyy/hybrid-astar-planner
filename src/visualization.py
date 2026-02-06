@@ -112,7 +112,8 @@ class Visualizer:
         color: str | None = None,
         linewidth: float = 2.0,
         label: str | None = None,
-        show_heading: bool = False
+        show_heading: bool = False,
+        alpha: float = 1.0
     ) -> None:
         """Plot path as a line."""
         if not path:
@@ -122,7 +123,7 @@ class Visualizer:
         x = [s.x for s in path]
         y = [s.y for s in path]
 
-        ax.plot(x, y, color=color, linewidth=linewidth, label=label)
+        ax.plot(x, y, color=color, linewidth=linewidth, label=label, alpha=alpha)
 
         if show_heading:
             # Show heading arrows at intervals
@@ -230,7 +231,7 @@ class Visualizer:
 
         anim = FuncAnimation(
             fig, animate, init_func=init,
-            frames=len(path), interval=interval, blit=True
+            frames=len(path), interval=interval, blit=False
         )
 
         if save_path:

@@ -18,7 +18,6 @@ env/
 .DS_Store
 Thumbs.db
 
-# Generated
-*.png
-*.gif
-!assets/.gitkeep
+# Generated (keep assets images)
+!assets/*.png
+!assets/*.gif

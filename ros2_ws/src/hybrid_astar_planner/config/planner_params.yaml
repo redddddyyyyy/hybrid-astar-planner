@@ -1,0 +1,25 @@
+hybrid_astar_planner:
+  ros__parameters:
+    # Vehicle parameters
+    vehicle:
+      wheelbase: 2.5      # Distance between axles (m)
+      width: 1.8          # Vehicle width (m)
+      length: 4.5         # Vehicle length (m)
+      max_steer: 0.6      # Maximum steering angle (rad, ~35 degrees)
+
+    # Planner parameters
+    planner:
+      xy_resolution: 1.0          # Grid cell size for state hashing (m)
+      theta_resolution: 0.1       # Heading discretization (rad)
+      step_size: 1.5              # Motion primitive length (m)
+      include_reverse: true       # Allow reverse motions
+      smooth_path: true           # Apply path smoothing
+      smooth_iterations: 100      # Number of smoothing iterations
+
+    # Grid parameters
+    grid:
+      resolution: 0.25    # Occupancy grid resolution (m)
+
+    # Behavior
+    replan_on_obstacle_change: true   # Trigger replanning when obstacles change
+    publish_rate: 10.0                # Path publishing rate (Hz)

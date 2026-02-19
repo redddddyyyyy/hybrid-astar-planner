@@ -1,0 +1,546 @@
+================================================================================
+HYBRID A* PLANNER — LEARNING NOTES
+================================================================================
+A simple reference for everything about this project and every change we make.
+Written so that even a 10-year-old could follow along.
+
+================================================================================
+WHAT IS THIS PROJECT?
+================================================================================
+
+Imagine you have a remote-control car in a room full of furniture. You want
+the car to drive from one corner to the other without crashing into anything.
+
+Your brain can figure out a path pretty easily — but how do you teach a
+COMPUTER to do it?
+
+That's what this project does. It's a "path planner" — a program that finds
+a safe route for a car-like robot to follow.
+
+THE KEY IDEA — WHY "HYBRID A*"?
+
+There are simpler ways to find paths:
+
+  1. REGULAR A* — Think of a chessboard. A* finds the shortest path by hopping
+     from square to square. It's fast, but it ignores one big thing: real cars
+     can't teleport sideways or spin in place. A* might say "go right then
+     instantly go up" — but a car with a steering wheel can't do that.
+
+  2. RRT* (Rapidly-exploring Random Trees) — This one randomly throws darts at
+     the map and connects them into a path. It works, but the paths are messy
+     and wobbly.
+
+  3. HYBRID A* (what we built) — The smart combo. It searches on a grid like
+     regular A*, BUT it also keeps track of which direction the car is facing
+     and only makes moves the car can actually perform (turning the steering
+     wheel, driving forward/backward). The result: a path that a real car can
+     actually drive.
+
+HOW THE CODE IS ORGANIZED:
+
+  src/hybrid_astar.py  — The brain. The search algorithm that finds the path.
+  src/vehicle.py       — The car model. Knows how cars turn and move.
+  src/grid.py          — The map. Knows where obstacles are.
+  src/visualization.py — The artist. Draws pictures of the path.
+  src/dubins.py        — Math for smooth curves (like highway on-ramps).
+  src/dynamic_planner.py — Handles moving obstacles (replanning on the fly).
+  src/benchmark.py     — Races A*, RRT*, and Hybrid A* against each other.
+  main.py              — The "start" button. Runs a demo scenario.
+
+HOW THE ALGORITHM WORKS (step by step):
+
+  1. Start with a to-do list (called "open set") containing just the start
+     position.
+  2. Pick the most promising position from the list (lowest estimated total
+     cost).
+  3. Ask: "Am I at the goal?" If yes, trace back the path and we're done!
+  4. If not, try every possible move the car can make (steer left, go
+     straight, steer right — both forward and reverse).
+  5. For each move, check: "Would I crash into something?" If no, add the
+     new position to the to-do list with its cost.
+  6. Repeat from step 2 until we find the goal or run out of options.
+
+  The "cost" of each move combines:
+    - Distance traveled (shorter is better)
+    - How much we're turning the wheel (less turning is smoother)
+    - Whether we're going in reverse (we prefer forward)
+    - Whether we switched from forward to reverse (that's awkward, costs more)
+
+  The "heuristic" is our guess of how far the goal still is. It helps the
+  algorithm search toward the goal instead of wandering aimlessly.
+
+
+================================================================================
+CHANGES WE MADE — STEP 1: PERFORMANCE FIXES
+================================================================================
+
+We made 3 fixes that make the code FASTER without changing what it does.
+Think of it like replacing a bicycle chain with a smoother one — same bike,
+just pedals easier.
+
+------------------------------------------------------------------------
+FIX 1: _normalize_angle() — From slow loop to instant math
+------------------------------------------------------------------------
+
+WHERE: src/hybrid_astar.py, src/vehicle.py, src/dubins.py
+
+WHAT IS AN ANGLE NORMALIZATION?
+  Angles wrap around. 360 degrees = 0 degrees. If a car turns and its angle
+  becomes 400 degrees, we want to say "that's really 40 degrees."
+  Normalization squishes any angle back into the standard range.
+
+THE OLD WAY (slow):
+  "Is the angle too big? Subtract 360. Still too big? Subtract again..."
+  If the angle was 100,000 degrees, this loop ran ~277 times!
+
+    while angle > pi:
+        angle -= 2 * pi      <-- one subtraction at a time, like a slow clock
+
+THE NEW WAY (instant):
+    return (angle + pi) % (2 * pi) - pi
+
+  The % (modulo) operator does all the wrapping in ONE step, no matter how
+  big the angle is. It's like using a calculator instead of counting on
+  your fingers.
+
+  For dubins.py, it's even simpler: angle % (2 * pi) because that file
+  uses a range of [0, 360) instead of [-180, 180).
+
+------------------------------------------------------------------------
+FIX 2: smooth_path() — Let NumPy do the heavy lifting
+------------------------------------------------------------------------
+
+WHERE: src/hybrid_astar.py (the smooth_path function at the bottom)
+
+WHAT IS PATH SMOOTHING?
+  After the algorithm finds a path, it's jagged — like drawing a line with
+  a shaky hand. Smoothing pulls each point gently toward its neighbors,
+  like stretching a rubber band until it's nice and curvy.
+
+THE OLD WAY (slow):
+  A Python "for" loop that visited each point one by one:
+
+    for i in range(1, len(path) - 1):   <-- "go to point 1, then 2, then 3..."
+        do math on point i
+
+  With 500 points and 100 smoothing rounds, that's 50,000 tiny Python steps.
+  Python is like a person doing math by hand — accurate but slow.
+
+THE NEW WAY (fast):
+    new_x[1:-1] += weight_smooth * (new_x[:-2] + new_x[2:] - 2 * new_x[1:-1])
+
+  This tells NumPy "do the math on ALL points at once." NumPy is written in
+  C (a much faster language), so it's like handing the math homework to a
+  supercomputer. Same answer, ~50-100x faster.
+
+  WHAT THE SLICES MEAN:
+    new_x[1:-1]  = all points EXCEPT the first and last (the interior)
+    new_x[:-2]   = each point's LEFT neighbor
+    new_x[2:]    = each point's RIGHT neighbor
+
+  Same thing for the heading (direction the car faces) — we replaced
+  math.atan2 (one angle at a time) with np.arctan2 (all angles at once).
+
+------------------------------------------------------------------------
+FIX 3: Prevent heap bloat in the A* search
+------------------------------------------------------------------------
+
+WHERE: src/hybrid_astar.py (inside the plan() method)
+
+WHAT IS THE HEAP?
+  The "open set" is stored as a heap — a smart to-do list that always gives
+  you the cheapest item first. Think of it like a stack of homework sorted
+  by difficulty — you always grab the easiest one next.
+
+THE PROBLEM:
+  Imagine 5 different paths all lead to the same grid cell. The old code
+  added ALL 5 to the to-do list, even though we only need the cheapest one.
+  The heap kept growing with duplicates, making it slower to find the next
+  best item.
+
+THE FIX:
+  We added a "tracker" dictionary (open_set_tracker) that remembers:
+  "What's the cheapest cost I've seen to reach this cell?"
+
+  Before adding a new node to the heap, we check:
+    - Already found a cheaper way here? SKIP.
+    - This is the best so far? ADD it and remember the cost.
+
+  This keeps the heap small and lean — no wasted duplicates.
+
+  New code:
+    if new_index in open_set_tracker and g_cost >= open_set_tracker[new_index]:
+        continue    # skip — we already know a better path to this cell
+
+    open_set_tracker[new_index] = g_cost    # remember this cost
+    heapq.heappush(open_set, new_node)      # add to the to-do list
+
+
+================================================================================
+CHANGES WE MADE — STEP 2: UNIT TESTS
+================================================================================
+
+WHAT ARE UNIT TESTS?
+  Think of unit tests like a pilot's checklist before takeoff. "Engines?
+  Check. Flaps? Check." Unit tests do the same for code — they run little
+  experiments to prove each piece works correctly.
+
+WHY DO EMPLOYERS CARE?
+  Anyone can write code that *seems* to work. Tests PROVE it works. They
+  also catch bugs when you make future changes — if you accidentally break
+  something, a test will scream at you before a user ever sees it.
+
+WHAT WE TESTED:
+  tests/test_vehicle.py  — 12 tests for the car model (steering, driving,
+                           reverse, angle normalization, footprint shape)
+  tests/test_grid.py     — 9 tests for the map (obstacles, boundaries,
+                           collisions, coordinate conversion)
+  tests/test_planner.py  — 12 tests for the path planner (finding paths,
+                           avoiding obstacles, smoothing)
+
+HOW TO RUN TESTS:
+  Always run from the PROJECT ROOT (not inside tests/):
+    cd /Users/reddy./claude/hybrid-astar-planner
+    python -m pytest tests/ -v              <-- run ALL tests
+    python -m pytest tests/test_vehicle.py -v   <-- run one file
+    python -m pytest tests/test_grid.py::TestOccupancyGrid::test_boundary_walls -v
+                                                <-- run one specific test
+
+  -v means "verbose" — shows each test name and PASSED/FAILED.
+
+IMPORTANT LESSON: Always run from the project root, NOT from inside tests/.
+  If you run from tests/, Python can't find "from src.grid import ..." because
+  it looks for src/ relative to where you ran the command.
+
+------------------------------------------------------------------------
+BUGS FOUND AND FIXED DURING TESTING
+------------------------------------------------------------------------
+
+BUG 1: _normalize_angle test — pi vs -pi
+.........................................
+
+THE ERROR:
+  assert Vehicle._normalize_angle(-3 * math.pi) == pytest.approx(math.pi)
+  FAILED: got -3.14159... instead of 3.14159...
+
+WHAT HAPPENED:
+  Our O(1) formula  (angle + pi) % (2*pi) - pi  normalizes to the range
+  [-pi, pi). That means -pi IS included but +pi is NOT. So -3*pi becomes
+  -pi, not +pi.
+
+  But -pi and +pi are the SAME direction — like how 12:00 AM and 0:00 are
+  the same time. Neither is "wrong."
+
+WAS IT A BUG IN THE CODE?
+  No! The code was correct. The TEST had the wrong expectation.
+
+THE FIX:
+  Changed the test to check the absolute value:
+    assert abs(Vehicle._normalize_angle(-3 * math.pi)) == pytest.approx(math.pi)
+
+  This accepts both -pi and +pi as correct answers.
+
+LESSON: Sometimes the test is wrong, not the code. Always think about which
+  one to fix.
+
+------------------------------------------------------------------------
+
+BUG 2: smooth_path crashes with integer coordinates (NumPy dtype error)
+.......................................................................
+
+THE ERROR:
+  numpy.core._exceptions._UFuncOutputCastingError:
+  Cannot cast ufunc 'add' output from dtype('float64') to dtype('int64')
+  with casting rule 'same_kind'
+
+  Crashed at line:  new_x[1:-1] += weight_data * (x[1:-1] - new_x[1:-1])
+
+WHAT HAPPENED:
+  When you create State(0, 0, 0) with INTEGER values (no decimal point),
+  np.array([s.x for s in path]) creates an int64 array.
+
+  Then the smoothing math produces float64 results (numbers with decimals
+  like 0.3 * 2 = 0.6). The += operator tries to store that float64 result
+  back into the int64 array. NumPy refuses because it would lose the
+  decimal part (0.6 would become 0).
+
+WHY DIDN'T THIS BREAK BEFORE?
+  In real usage, Vehicle.step() always returns coordinates like 5.123456
+  (floats), so the arrays naturally end up as float64. Our tests used
+  clean integers like State(0, 0, 0) which exposed this fragile assumption.
+
+THE FIX (in src/hybrid_astar.py, smooth_path function):
+  Changed:
+    x = np.array([s.x for s in path])
+    y = np.array([s.y for s in path])
+    theta = np.array([s.theta for s in path])
+
+  To:
+    x = np.array([s.x for s in path], dtype=float)
+    y = np.array([s.y for s in path], dtype=float)
+    theta = np.array([s.theta for s in path], dtype=float)
+
+  dtype=float tells NumPy: "No matter what I give you — integers, strings,
+  whatever — store them as decimal numbers." Now float math always works.
+
+LESSON: This is a GREAT example of tests finding bugs that normal usage
+  never triggers. The code worked fine during demos but had a hidden bug
+  that would crash if anyone passed integer coordinates. Tests made the
+  code more robust.
+
+------------------------------------------------------------------------
+WHAT EACH TEST DOES (plain English)
+------------------------------------------------------------------------
+
+test_vehicle.py — "DOES THE CAR WORK?" (12 tests)
+Think of this like testing a toy car before selling it:
+
+  distance_to_same_point     — Distance to yourself = 0. Sanity check.
+  distance_to_other_point    — 3-4-5 triangle = distance of 5. Basic math.
+  to_tuple                   — Data packs into (x, y, angle) correctly.
+  straight_line_forward      — Drive straight ahead, end up ahead.
+  straight_line_reverse      — Put in reverse, car goes backward.
+  left_turn_moves_left       — Turn wheel left, car curves left.
+  right_turn_moves_right     — Turn wheel right, car curves right.
+  steering_is_clamped        — Can't steer past the physical limit.
+  normalize_angle            — 720 degrees wraps around to 0 degrees.
+  footprint_has_four_corners — Car's collision shape has 4 corners.
+  footprint_centered_on_vehicle — Collision shape is where the car is.
+  motion_primitives_count    — 5 angles x 2 directions = 10 moves.
+
+test_grid.py — "DOES THE MAP WORK?" (9 tests)
+Like testing a board game map before playing:
+
+  empty_grid_no_collision       — Empty parking lot = nothing to hit.
+  out_of_bounds_is_occupied     — Off the map edge = wall.
+  in_bounds_check               — "Am I still on the map?"
+  add_circle_creates_obstacle   — Put a tree down, center is blocked.
+  add_circle_outside_is_free    — Tree doesn't block the whole map.
+  add_rectangle_creates_obstacle — Park a truck, its spot is blocked.
+  boundary_walls                — Fences around edges, center is open.
+  clearance_decreases_near_obstacle — Closer to wall = less space.
+  world_to_grid_conversion      — "5 meters in" = "grid cell 10."
+
+test_planner.py — "DOES THE BRAIN WORK?" (12 tests)
+The most important ones — testing actual pathfinding:
+
+  straight_path_no_obstacles   — Can you walk across an empty room? Yes.
+  path_starts_near_start       — GPS route begins at your location.
+  path_ends_near_goal          — GPS route reaches your destination.
+  path_around_obstacle         — Road blocked? Take a different street.
+  no_path_when_goal_blocked    — Can't drive inside a building. Returns None.
+  no_path_when_start_blocked   — Car is stuck inside a wall. Returns None.
+  reverse_motion_enabled       — Car has both forward + reverse moves.
+  reverse_motion_disabled      — Bike mode: forward only.
+  short_path_unchanged         — Can't smooth a 2-point straight line.
+  smoothed_path_same_length    — Same number of dots, just shifted around.
+  endpoints_preserved          — Start and end stay put during smoothing.
+  smoothing_reduces_jaggedness — Shaky zigzag becomes a gentle curve.
+
+THE BIG PICTURE: These 33 tests are a safety net. Every time you change code
+  in the future, run "python -m pytest tests/ -v" and within 10 seconds you
+  know if you broke anything. That's the real power of tests.
+
+
+================================================================================
+CHANGES WE MADE — STEP 3: DUBINS ANALYTIC EXPANSION
+================================================================================
+
+WHAT IS A DUBINS CURVE?
+  Imagine you're driving a car and you can only go FORWARD (no reverse).
+  What's the shortest possible path from where you are to a parking spot,
+  given that you have a minimum turning radius?
+
+  A mathematician named Dubins proved in 1957 that the answer is always
+  made of exactly 3 segments, each being one of:
+    L = Left turn (at minimum radius)
+    S = Straight line
+    R = Right turn (at minimum radius)
+
+  There are only 6 possible combinations:
+    LSL, LSR, RSL, RSR, RLR, LRL
+
+  The code tries all 6 and picks the shortest one.
+
+WHAT IS "ANALYTIC EXPANSION"?
+  Without it: The A* search grinds cell-by-cell toward the goal. Even when
+    you're 2 meters away, it still searches one cell at a time. Like walking
+    to your front door one inch at a time.
+
+  With it: Every 10 iterations, we ask "Can I draw a perfect Dubins curve
+    from HERE directly to the GOAL?" If yes, and the curve doesn't hit any
+    obstacles, we skip all remaining searching and just take the shortcut.
+    Like seeing your front door and walking straight to it.
+
+THE RESULT:
+  Tests went from 10.43 seconds to 1.56 seconds — a 6.7x speedup!
+  The planner finds shortcuts early and stops wasting time on cell-by-cell
+  searching when a clean path to the goal exists.
+
+WHAT WE CHANGED:
+
+1. Added import (src/hybrid_astar.py, top of file):
+     from .dubins import compute_dubins_path
+
+2. Added _try_dubins_shortcut method to HybridAStar class:
+   - Takes the current search node and the goal
+   - Computes the shortest Dubins curve between them
+   - Samples points along the curve and checks each for collisions
+   - If collision-free: combines the A* path so far + the Dubins curve
+   - If any collision: returns None (keep searching normally)
+
+3. Added the shortcut call in the search loop (plan method):
+     if iterations % 10 == 0:
+         shortcut = self._try_dubins_shortcut(current, goal)
+         if shortcut is not None:
+             return shortcut
+
+   WHY every 10 iterations, not every iteration?
+   Computing a Dubins curve + sampling + collision checking has a cost.
+   Doing it EVERY iteration would slow things down when we're far from
+   the goal and the curve would definitely hit obstacles. Every 10 is a
+   good balance — frequent enough to catch shortcuts early, rare enough
+   to not waste time.
+
+WHY THIS MATTERS FOR YOUR PORTFOLIO:
+  This is the standard technique from the original Hybrid A* paper
+  (Dolgov et al., 2010 — the algorithm used in Google's self-driving car).
+  Having this in your implementation shows you've read the actual research
+  papers and implemented the full algorithm, not just a toy version.
+
+
+================================================================================
+CHANGES WE MADE — STEP 4: STREAMLIT WEB DEMO
+================================================================================
+
+WHAT IS STREAMLIT?
+  Streamlit is a Python library that turns a regular Python script into a
+  web page. You don't need to learn HTML, CSS, or JavaScript. You just write
+  Python and Streamlit creates buttons, sliders, and charts automatically.
+
+  Think of it like this: matplotlib makes pictures, Streamlit makes websites.
+
+WHY A WEB DEMO?
+  Recruiters and hiring managers almost NEVER clone your repo and run it
+  locally. A live web demo they can click on in 2 seconds is worth 10x
+  more than a README with screenshots. It shows you can ship something
+  people can actually use, not just code that sits in a folder.
+
+WHAT WE BUILT (app.py):
+
+  The app has 3 sections:
+
+  1. SIDEBAR (left panel):
+     - Scenario dropdown: parking, maze, narrow passage, U-turn
+     - Planner sliders: steering angles, step size
+     - Checkboxes: allow reverse, enable smoothing
+     - Vehicle sliders: wheelbase, max steering angle
+     WHY: Lets users explore tradeoffs. More steering angles = smoother
+     paths but slower. No reverse = can't park. Long wheelbase = wider turns.
+
+  2. MAIN AREA (center):
+     - A preview of the scenario (obstacles + start/goal cars)
+     - "Plan Path" button that runs the algorithm
+     - After planning: 4 stat cards (time, waypoints, length, smoothed)
+     - The matplotlib plot showing raw path (red) and smoothed path (green)
+
+  3. INFO PANEL (right):
+     - Quick explanation of the 3 algorithm stages
+     - Helps visitors understand what they're looking at
+
+HOW TO RUN IT:
+  cd /Users/reddy./claude/hybrid-astar-planner
+  streamlit run app.py
+
+  Opens in your browser at http://localhost:8501
+
+KEY STREAMLIT CONCEPTS USED:
+  st.sidebar.slider(...)   — Creates a slider in the left panel
+  st.sidebar.selectbox(...) — Creates a dropdown in the left panel
+  st.sidebar.checkbox(...)  — Creates a toggle in the left panel
+  st.columns([3, 1])        — Splits the page into columns (3:1 ratio)
+  st.button(...)             — Creates a clickable button
+  st.spinner(...)            — Shows a loading animation while code runs
+  st.metric(...)             — Shows a stat card with a label and value
+  st.pyplot(fig)             — Displays a matplotlib figure on the page
+
+HOW THE CODE FLOWS:
+  1. User opens page → sees sidebar + scenario preview (no path yet)
+  2. User tweaks settings and clicks "Plan Path"
+  3. Code builds a grid, vehicle, and planner from sidebar values
+  4. Planner runs (with timer) → returns a path or None
+  5. If path found: smooth it, calculate stats, draw the plot
+  6. If no path: show error message
+
+ALSO UPDATED:
+  - requirements.txt: added streamlit>=1.20.0 and pytest>=7.0.0
+    WHY: So anyone who clones the repo can "pip install -r requirements.txt"
+    and everything they need gets installed automatically.
+
+
+================================================================================
+CHANGES WE MADE — STEP 5: README WITH VISUALS
+================================================================================
+
+WHY THE README MATTERS:
+  The README is the FIRST thing anyone sees when they visit your GitHub repo.
+  Recruiters spend maybe 10-15 seconds scanning it. If they see a wall of
+  text, they leave. If they see images, badges, and a clear structure, they
+  stay and actually read your code.
+
+WHAT WE CHANGED:
+
+1. ADDED A "TESTS" BADGE
+   The green "33 passed" badge at the top tells visitors instantly that
+   this project has real tests. Most student projects don't have this.
+
+2. ADDED "TRY IT LIVE" CALLOUT
+   A highlighted box right at the top pointing to the Streamlit demo.
+   Makes it effortless for visitors to try the project.
+
+3. UPDATED FEATURES TABLE
+   Added Dubins analytic expansion, web demo, and 33 unit tests.
+   These are the improvements WE built — they deserve to be front and center.
+
+4. UPDATED PROJECT STRUCTURE
+   Added tests/ directory and app.py so visitors can see at a glance
+   that the project has tests and a web demo.
+
+5. GENERATED 4 SCENARIO IMAGES
+   Ran the planner on all 4 scenarios and saved the plots:
+     assets/parking_result.png
+     assets/maze_result.png
+     assets/narrow_passage_result.png
+     assets/u_turn_result.png
+   Displayed as a 2x2 grid in the README so all scenarios are visible
+   without scrolling forever.
+
+6. ADDED ARCHITECTURE DIAGRAM
+   A text-based diagram showing how modules connect:
+     main.py/app.py → HybridAStar → Vehicle
+                          ↓
+              Grid + Dubins Expansion + Smoother
+   Helps visitors understand the codebase structure in 5 seconds.
+
+7. ADDED WEB DEMO AND TESTING SECTIONS
+   Clear instructions on how to run the Streamlit app and pytest.
+
+KEY LESSON:
+  A README is marketing for your code. Engineers sell their work through
+  documentation, not just through the code itself. A beautiful README with
+  images, clear structure, and a live demo link sets you apart from 90%
+  of GitHub projects.
+
+
+================================================================================
+CHANGES WE MADE — STEP 6: DOCKERFILE + CI
+================================================================================
+
+(Coming soon!)
+
+
+================================================================================
+CHANGES WE MADE — STEP 7: ACKERMANN/TRAILER MODEL
+================================================================================
+
+(Coming soon!)

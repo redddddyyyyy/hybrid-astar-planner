@@ -173,8 +173,4 @@ class Vehicle:
     @staticmethod
     def _normalize_angle(angle: float) -> float:
         """Normalize angle to [-pi, pi]."""
-        while angle > math.pi:
-            angle -= 2 * math.pi
-        while angle < -math.pi:
-            angle += 2 * math.pi
-        return angle
+        return (angle + math.pi) % (2 * math.pi) - math.pi

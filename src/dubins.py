@@ -292,11 +292,7 @@ def _dubins_LRL(alpha: float, beta: float, d: float) -> Tuple[float, float, floa
 
 def _normalize_angle(angle: float) -> float:
     """Normalize angle to [0, 2*pi)."""
-    while angle < 0:
-        angle += 2 * math.pi
-    while angle >= 2 * math.pi:
-        angle -= 2 * math.pi
-    return angle
+    return angle % (2 * math.pi)
 
 
 class DubinsPlanner:

@@ -3,37 +3,40 @@
 [![Python](https://img.shields.io/badge/Python-3.8+-3776AB?style=flat&logo=python&logoColor=white)](https://python.org/)
 [![ROS2](https://img.shields.io/badge/ROS2-Humble-22314E?style=flat&logo=ros&logoColor=white)](https://docs.ros.org/)
 [![NumPy](https://img.shields.io/badge/NumPy-1.21+-013243?style=flat&logo=numpy&logoColor=white)](https://numpy.org/)
+[![Tests](https://img.shields.io/badge/Tests-33%20passed-brightgreen?style=flat)](tests/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-Implementation of the **Hybrid A\*** path planning algorithm for non-holonomic vehicles with **ROS2 integration**, **dynamic obstacle replanning**, **Dubins curves**, and **benchmark comparisons**.
+Implementation of the **Hybrid A\*** path planning algorithm for non-holonomic vehicles with **ROS2 integration**, **dynamic obstacle replanning**, **Dubins analytic expansion**, and **benchmark comparisons**.
+
+> **Try it live:** Run `streamlit run app.py` for an interactive web demo where you can pick scenarios, tweak vehicle settings, and watch the planner work in real time.
 
 ---
 
 ## Results
 
-### Path Planning Comparison
+### Scenario Gallery
+
+| Parking Lot | Maze |
+|:-----------:|:----:|
+| <img src="assets/parking_result.png" width="420"/> | <img src="assets/maze_result.png" width="420"/> |
+| Navigate between parked cars | Find a path through walled corridors |
+
+| Narrow Passage | U-Turn |
+|:--------------:|:------:|
+| <img src="assets/narrow_passage_result.png" width="420"/> | <img src="assets/u_turn_result.png" width="420"/> |
+| Squeeze through a tight corridor | Reverse and turn around an obstacle |
+
+### Benchmark Comparison
 
 <p align="center">
   <img src="assets/benchmark_comparison.png" alt="Algorithm Comparison" width="900"/>
 </p>
-
-*Comparison of A*, RRT*, and Hybrid A* on parking lot scenario*
-
-### Parking Lot Navigation
-
-<p align="center">
-  <img src="assets/parking_result.png" alt="Parking Scenario" width="700"/>
-</p>
-
-*Vehicle navigating through a parking lot with parked cars as obstacles*
 
 ### Path Planning Animation
 
 <p align="center">
   <img src="assets/planning_demo.gif" alt="Planning Animation" width="700"/>
 </p>
-
-*Real-time visualization of vehicle following the planned path*
 
 ---
 
@@ -42,9 +45,11 @@ Implementation of the **Hybrid A\*** path planning algorithm for non-holonomic v
 | Feature | Description |
 |---------|-------------|
 | **Hybrid A\*** | Grid-based search with continuous state tracking |
+| **Dubins Analytic Expansion** | Shortcut-to-goal via Dubins curves for faster convergence |
+| **Interactive Web Demo** | Streamlit app with live scenario selection and parameter tuning |
+| **33 Unit Tests** | Full pytest suite covering vehicle, grid, and planner modules |
 | **ROS2 Integration** | Full ROS2 package with nav_msgs/Path publishing |
 | **Dynamic Replanning** | Real-time path updates when obstacles move |
-| **Dubins Curves** | Optimal paths for forward-only motion |
 | **Benchmark Suite** | Compare A*, RRT*, Hybrid A* performance |
 | **Multiple Scenarios** | Parking, maze, narrow passage, U-turn demos |
 | **Animated Visualization** | GIF export for path following |
@@ -54,25 +59,24 @@ Implementation of the **Hybrid A\*** path planning algorithm for non-holonomic v
 ## Project Structure
 
 ```
+├── app.py                   # Streamlit interactive web demo
+├── main.py                  # CLI demo script
+├── benchmark_demo.py        # Benchmark comparison script
+├── requirements.txt         # Dependencies
 ├── src/
-│   ├── __init__.py          # Package exports
-│   ├── hybrid_astar.py      # Main Hybrid A* algorithm
+│   ├── hybrid_astar.py      # Main algorithm + Dubins analytic expansion
 │   ├── vehicle.py           # Bicycle kinematic model
 │   ├── grid.py              # Occupancy grid + collision detection
 │   ├── visualization.py     # Plotting + animation
 │   ├── dubins.py            # Dubins curve computation
 │   ├── dynamic_planner.py   # Real-time replanning
 │   └── benchmark.py         # A*, RRT*, Hybrid A* comparison
-├── ros2_ws/                 # ROS2 workspace
-│   └── src/hybrid_astar_planner/
-│       ├── planner_node.py      # Main ROS2 node
-│       ├── obstacle_publisher.py # Dynamic obstacle publisher
-│       ├── config/              # Parameter files
-│       └── launch/              # Launch files
-├── main.py                  # Demo script
-├── benchmark_demo.py        # Benchmark comparison script
-├── examples/                # Example scripts
-└── requirements.txt         # Dependencies
+├── tests/
+│   ├── test_vehicle.py      # 12 tests — kinematics, steering, footprint
+│   ├── test_grid.py         # 9 tests — collisions, boundaries, coordinates
+│   └── test_planner.py      # 12 tests — pathfinding, smoothing, edge cases
+└── ros2_ws/                 # ROS2 workspace
+    └── src/hybrid_astar_planner/
 ```
 
 ---
@@ -109,6 +113,54 @@ python benchmark_demo.py --scenario parking --trials 5
 # Save comparison plot
 python benchmark_demo.py --scenario parking --save assets/benchmark_comparison.png
 ```
+
+### Interactive Web Demo
+
+```bash
+streamlit run app.py
+```
+
+Opens a browser UI where you can:
+- Select scenarios (parking, maze, narrow passage, U-turn)
+- Adjust planner settings (steering angles, step size, reverse toggle)
+- Tune vehicle parameters (wheelbase, max steering angle)
+- View computation metrics (time, path length, waypoints)
+
+### Run Tests
+
+```bash
+# Run all 33 tests
+python -m pytest tests/ -v
+
+# Run a specific test file
+python -m pytest tests/test_vehicle.py -v
+```
+
+---
+
+## Architecture
+
+```
+┌─────────────┐     ┌──────────────┐     ┌───────────────┐
+│  main.py /  │────▶│ HybridAStar  │────▶│    Vehicle     │
+│   app.py    │     │  (planner)   │     │ (bicycle model)│
+└─────────────┘     └──────┬───────┘     └───────────────┘
+                           │
+              ┌────────────┼────────────┐
+              ▼            ▼            ▼
+      ┌──────────┐  ┌───────────┐  ┌──────────┐
+      │Occupancy │  │  Dubins   │  │  Path    │
+      │  Grid    │  │ Expansion │  │ Smoother │
+      │(obstacles│  │(shortcut  │  │(gradient │
+      │& collision)│ │ to goal)  │  │ descent) │
+      └──────────┘  └───────────┘  └──────────┘
+```
+
+**How it works:**
+1. `HybridAStar` searches the grid using bicycle-model kinematics
+2. Every 10 iterations, it tries a **Dubins shortcut** directly to the goal
+3. If the shortcut is collision-free, it skips the remaining search
+4. The raw path is **smoothed** using gradient descent to reduce jaggedness
 
 ---
 

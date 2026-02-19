@@ -11,6 +11,7 @@ import numpy as np
 
 from .vehicle import Vehicle, VehicleConfig, State
 from .grid import OccupancyGrid
+from .dubins import compute_dubins_path
 
 
 @dataclass
@@ -118,7 +119,7 @@ class HybridAStar:
 
         open_set: List[Node] = [start_node]
         closed_set: Dict[Tuple[int, int, int], Node] = {}
-
+        open_set_tracker: Dict[Tuple[int, int, int], float] = {}
         iterations = 0
 
         while open_set and iterations < self.config.max_iterations:
@@ -138,6 +139,17 @@ class HybridAStar:
             if self._is_goal(current.state, goal):
                 print(f"Path found in {iterations} iterations!")
                 return self._reconstruct_path(current)
+
+            # Try Dubins shortcut every 10 iterations
+            # WHY every 10? Computing a Dubins curve + collision checking it
+            # costs time. Doing it EVERY iteration would slow us down. Every
+            # 10 is a good balance — frequent enough to catch shortcuts early,
+            # rare enough to not waste time when we're far from the goal.
+            if iterations % 10 == 0:
+                shortcut = self._try_dubins_shortcut(current, goal)
+                if shortcut is not None:
+                    print(f"Dubins shortcut found at iteration {iterations}!")
+                    return shortcut
 
             # Expand neighbors using motion primitives
             for steer, distance, reverse in self.primitives:
@@ -179,6 +191,11 @@ class HybridAStar:
                 if new_index in closed_set:
                     continue
 
+                # Only push if we found a better path to this cell
+                if new_index in open_set_tracker and g_cost >= open_set_tracker[new_index]:
+                    continue
+
+                open_set_tracker[new_index] = g_cost
                 heapq.heappush(open_set, new_node)
 
         print(f"No path found after {iterations} iterations")
@@ -263,6 +280,37 @@ class HybridAStar:
                 dy < self.config.goal_xy_tolerance and
                 dtheta < self.config.goal_theta_tolerance)
 
+    def _try_dubins_shortcut(self, node: Node, goal: State) -> List[State] | None:
+        """
+        Try to connect current node directly to goal via a Dubins curve.
+
+        This is the "analytic expansion" — instead of searching grid cell by
+        cell all the way to the goal, we try to draw a smooth curve directly
+        to it. If the curve doesn't hit any obstacles, we're done instantly.
+
+        Returns:
+            Full path from start to goal if shortcut works, None otherwise.
+        """
+        radius = self.vehicle.config.min_turn_radius
+
+        # Compute the shortest Dubins curve from here to the goal
+        dubins_path = compute_dubins_path(node.state, goal, radius)
+        if dubins_path is None:
+            return None
+
+        # Sample points along the curve and check each for collision
+        sampled = dubins_path.sample(step_size=self.config.step_size * 0.5)
+        for state in sampled:
+            if not self.grid.in_bounds(state.x, state.y):
+                return None
+            if self._check_collision(state):
+                return None
+
+        # No collisions! Combine the A* path so far + the Dubins curve
+        astar_path = self._reconstruct_path(node)
+        # Skip the first Dubins point (it's the same as the last A* point)
+        return astar_path + sampled[1:]
+
     def _reconstruct_path(self, node: Node) -> List[State]:
         """Reconstruct path by following parent pointers."""
         path = []
@@ -278,11 +326,7 @@ class HybridAStar:
     @staticmethod
     def _normalize_angle(angle: float) -> float:
         """Normalize angle to [-pi, pi]."""
-        while angle > math.pi:
-            angle -= 2 * math.pi
-        while angle < -math.pi:
-            angle += 2 * math.pi
-        return angle
+        return (angle + math.pi) % (2 * math.pi) - math.pi
 
 
 def smooth_path(path: List[State], iterations: int = 50, weight_data: float = 0.1, weight_smooth: float = 0.3) -> List[State]:
@@ -302,25 +346,23 @@ def smooth_path(path: List[State], iterations: int = 50, weight_data: float = 0.
         return path
 
     # Copy path to arrays
-    x = np.array([s.x for s in path])
-    y = np.array([s.y for s in path])
-    theta = np.array([s.theta for s in path])
+    x = np.array([s.x for s in path], dtype=float)
+    y = np.array([s.y for s in path], dtype=float)
+    theta = np.array([s.theta for s in path], dtype=float)
 
     new_x = x.copy()
     new_y = y.copy()
 
     for _ in range(iterations):
-        for i in range(1, len(path) - 1):
-            new_x[i] += weight_data * (x[i] - new_x[i])
-            new_x[i] += weight_smooth * (new_x[i - 1] + new_x[i + 1] - 2 * new_x[i])
+        new_x[1:-1] += weight_data * (x[1:-1] - new_x[1:-1])
+        new_x[1:-1] += weight_smooth * (new_x[:-2] + new_x[2:] - 2 * new_x[1:-1])
 
-            new_y[i] += weight_data * (y[i] - new_y[i])
-            new_y[i] += weight_smooth * (new_y[i - 1] + new_y[i + 1] - 2 * new_y[i])
+        new_y[1:-1] += weight_data * (y[1:-1] - new_y[1:-1])
+        new_y[1:-1] += weight_smooth * (new_y[:-2] + new_y[2:] - 2 * new_y[1:-1])
 
     # Recompute headings
     new_theta = theta.copy()
-    for i in range(len(path) - 1):
-        new_theta[i] = math.atan2(new_y[i + 1] - new_y[i], new_x[i + 1] - new_x[i])
+    new_theta[:-1] = np.arctan2(new_y[1:] - new_y[:-1], new_x[1:] - new_x[:-1])
     new_theta[-1] = new_theta[-2]
 
     return [State(new_x[i], new_y[i], new_theta[i]) for i in range(len(path))]
